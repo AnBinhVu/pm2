@@ -23,11 +23,12 @@ function sendTelegram(message) {
 }
 
 // ======================
-// Gửi metric lên Pushgateway
+// Push metric lên Pushgateway
 // ======================
 function pushMetric(vmId, status) {
     try {
-        const pushUrl = `${PUSHGATEWAY_URL}/instance/${vmId}`;
+        // Chỉ định job riêng: vm_autofix, instance là vmId
+        const pushUrl = `${PUSHGATEWAY_URL}/metrics/job/vm_autofix/instance/${vmId}`;
         const metric = `vm_autofix{vm="${vmId}", node="${NODE_IP}"} ${status}\n`;
         execSync(`echo '${metric}' | curl --data-binary @- ${pushUrl}`);
     } catch (e) {
@@ -36,23 +37,19 @@ function pushMetric(vmId, status) {
 }
 
 // ======================
-// Kiểm tra trạng thái VM
+// Kiểm tra và restart VM nếu cần
 // ======================
 function checkVM(vmId) {
     try {
-        let cmd = `qm status ${vmId}`;
-        let status = execSync(cmd).toString();
+        const status = execSync(`qm status ${vmId}`).toString().trim();
 
         if (!status.includes("running")) {
             sendTelegram(`VM ${vmId} không chạy, đang cố gắng restart...`);
-
-            let startCmd = `qm start ${vmId}`;
-            execSync(startCmd);
-
+            execSync(`qm start ${vmId}`);
             sendTelegram(`VM ${vmId} đã restart`);
-            pushMetric(vmId, 1); // thành công
+            pushMetric(vmId, 1); // restart thành công
         } else {
-            pushMetric(vmId, 1); // OK
+            pushMetric(vmId, 1); // VM đang chạy OK
         }
     } catch (e) {
         sendTelegram(`Lỗi khi kiểm tra VM ${vmId}: ${e.message}`);
@@ -64,8 +61,11 @@ function checkVM(vmId) {
 // Vòng lặp monitor
 // ======================
 function monitor() {
-    VM_LIST.forEach(vmId => checkVM(vmId));
+    VM_LIST.forEach(checkVM);
 }
 
-setInterval(monitor, 60000);
+// Chạy ngay khi start
 monitor();
+
+// Lặp lại mỗi 1 phút
+setInterval(monitor, 60 * 1000);
