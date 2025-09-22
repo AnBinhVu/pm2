@@ -2,8 +2,8 @@ const { execSync } = require("child_process");
 const axios = require("axios");
 require("dotenv").config();
 
-const BACKUP_DIR = "/var/backups/vm";
-const RSYNC_TARGETS = process.env.RSYNC_TARGETS.split(","); // Node 2,3
+const BACKUP_DIR = process.env.VM_BACKUP_DIR;
+const RSYNC_TARGETS = process.env.RSYNC_TARGETS.split(",");
 const NODE_IP = process.env.NODE_IP;
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -21,11 +21,11 @@ function sendTelegram(message) {
 }
 
 // ======================
-// Gửi metric lên Pushgateway
+// Push metric
 // ======================
 function pushMetric(vmId, status) {
     try {
-        const pushUrl = `${PUSHGATEWAY_URL}/instance/${vmId}`;
+        const pushUrl = `${PUSHGATEWAY_URL}/metrics/job/vm_backup/instance/${vmId}`;
         const metric = `vm_backup{vm="${vmId}", node="${NODE_IP}"} ${status}\n`;
         execSync(`echo '${metric}' | curl --data-binary @- ${pushUrl}`);
     } catch (e) {
@@ -34,7 +34,7 @@ function pushMetric(vmId, status) {
 }
 
 // ======================
-// Hàm backup VM
+// Backup VM
 // ======================
 function backupVM(vmId) {
     try {
@@ -46,14 +46,13 @@ function backupVM(vmId) {
             { stdio: "inherit" }
         );
 
-        console.log(`[${NODE_IP}] Backup VM ${vmId} done!`);
         sendTelegram(`Backup VM ${vmId} thành công`);
         pushMetric(vmId, 1);
 
-        // 👉 Xóa tất cả file cũ, chỉ giữ lại file mới nhất
+        // Cleanup local, giữ lại file mới nhất
         execSync(`ls -1t ${BACKUP_DIR}/vzdump-qemu-${vmId}-*.vma.lzo | tail -n +2 | xargs -r rm -f`);
         execSync(`ls -1t ${BACKUP_DIR}/vzdump-qemu-${vmId}-*.log | tail -n +2 | xargs -r rm -f`);
-        console.log(`[${NODE_IP}] Cleanup old backups for VM ${vmId}, giữ lại file mới nhất`);
+        console.log(`[${NODE_IP}] Cleanup old VM backups for ${vmId} done`);
     } catch (e) {
         console.error(`[${NODE_IP}] Backup VM ${vmId} error:`, e.message);
         sendTelegram(`Backup VM ${vmId} thất bại: ${e.message}`);
@@ -62,20 +61,18 @@ function backupVM(vmId) {
 }
 
 // ======================
-// Hàm rsync sang node khác
+// Rsync backups sang node khác
 // ======================
 function syncBackup() {
     RSYNC_TARGETS.forEach(target => {
         if (!target) return;
         try {
             execSync(`rsync -avz ${BACKUP_DIR}/ root@${target}:${BACKUP_DIR}/`);
-            console.log(`[${NODE_IP}] Rsync backup to ${target} done!`);
-            sendTelegram(`Rsync backup sang ${target} thành công`);
+            sendTelegram(`Rsync VM backups sang ${target} thành công`);
 
-            // 👉 Cleanup trên remote: giữ lại file mới nhất cho từng VM
+            // Cleanup remote, giữ lại bản mới nhất cho từng VM
             execSync(`ssh root@${target} "cd ${BACKUP_DIR} && for id in $(ls vzdump-qemu-*.vma.lzo 2>/dev/null | sed -E 's/vzdump-qemu-([0-9]+)-.*/\\1/' | sort -u); do ls -1t vzdump-qemu-$id-*.vma.lzo | tail -n +2 | xargs -r rm -f; ls -1t vzdump-qemu-$id-*.log | tail -n +2 | xargs -r rm -f; done"`);
-            console.log(`[${NODE_IP}] Cleanup old backups on ${target} done!`);
-            sendTelegram(`Cleanup backup cũ trên ${target} xong`);
+            sendTelegram(`Cleanup old VM backups trên ${target} done`);
         } catch (e) {
             console.error(`[${NODE_IP}] Rsync/Cleanup error to ${target}:`, e.message);
             sendTelegram(`Rsync/Cleanup lỗi sang ${target}: ${e.message}`);
@@ -92,8 +89,8 @@ function job() {
     syncBackup();
 }
 
-// 👉 Chạy ngay khi start
+// Chạy ngay khi start
 job();
 
-// 👉 Lặp lại mỗi 1 giờ
+// Lặp lại mỗi 1 giờ
 setInterval(job, 60 * 60 * 1000);
