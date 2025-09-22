@@ -20,10 +20,15 @@ function backupVM(vmId) {
 function syncBackup() {
     RSYNC_TARGETS.forEach(target => {
         try {
+            // Rsync file mới
             execSync(`rsync -avz ${BACKUP_DIR}/ root@${target}:${BACKUP_DIR}/`);
             console.log(`[${NODE_IP}] Rsync backup to ${target} done!`);
+
+            // Xóa file backup cũ hơn 1 ngày (trên node con)
+            execSync(`ssh root@${target} "find ${BACKUP_DIR} -type f -mtime +1 -delete"`);
+            console.log(`[${NODE_IP}] Cleanup old backups (>1 day) on ${target} done!`);
         } catch (e) {
-            console.error(`[${NODE_IP}] Rsync error to ${target}:`, e.message);
+            console.error(`[${NODE_IP}] Rsync/Cleanup error to ${target}:`, e.message);
         }
     });
 }
