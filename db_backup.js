@@ -2,15 +2,15 @@ const { execSync } = require("child_process");
 const axios = require("axios");
 require("dotenv").config();
 
-const BACKUP_DIR = "/var/backups/db";
+const BACKUP_DIR = process.env.DB_BACKUP_DIR;
 const RSYNC_TARGETS = process.env.RSYNC_TARGETS.split(",");
 const NODE_IP = process.env.NODE_IP;
 
 const DB_USER = process.env.DB_USER || "root";
 const DB_PASS = process.env.DB_PASS || "";
 const DB_NAME = process.env.DB_NAME || "virtualizor";
-const MYSQLDUMP_BIN = "/usr/local/emps/bin/mysqldump";
-const MYSQL_SOCKET = "/usr/local/emps/var/mysql/mysql.sock";
+const MYSQLDUMP_BIN = process.env.MYSQLDUMP_BIN || "mysqldump";
+const MYSQL_SOCKET = process.env.MYSQL_SOCKET;
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -31,7 +31,7 @@ function sendTelegram(message) {
 // ======================
 function pushMetric(status) {
     try {
-        const pushUrl = `${PUSHGATEWAY_URL}/instance/${DB_NAME}`;
+        const pushUrl = `${PUSHGATEWAY_URL}/metrics/job/db_backup/instance/${NODE_IP}`;
         const metric = `db_backup{db="${DB_NAME}", node="${NODE_IP}"} ${status}\n`;
         execSync(`echo '${metric}' | curl --data-binary @- ${pushUrl}`);
     } catch (e) {
@@ -53,9 +53,9 @@ function backupDB() {
         sendTelegram(`Backup DB ${DB_NAME} OK: ${dumpFile}`);
         pushMetric(1);
 
-        // 👉 Xóa tất cả file cũ, chỉ giữ lại file mới nhất
+        // Xóa file cũ, giữ lại file mới nhất
         execSync(`ls -1t ${BACKUP_DIR}/db_${DB_NAME}_*.sql.gz | tail -n +2 | xargs -r rm -f`);
-        console.log(`[${NODE_IP}] Cleanup old local DB backups, giữ lại bản mới nhất`);
+        console.log(`[${NODE_IP}] Cleanup old DB backups done`);
 
         return dumpFile;
     } catch (e) {
@@ -76,9 +76,9 @@ function syncBackup(file) {
             execSync(`rsync -avz ${file} root@${target}:${BACKUP_DIR}/`);
             sendTelegram(`Rsync DB backup to ${target} done!`);
 
-            // 👉 Cleanup: chỉ giữ lại bản mới nhất ở remote
+            // Cleanup remote, giữ lại file mới nhất
             execSync(`ssh root@${target} "ls -1t ${BACKUP_DIR}/db_${DB_NAME}_*.sql.gz | tail -n +2 | xargs -r rm -f"`);
-            sendTelegram(`Cleanup old DB backups trên ${target} xong`);
+            sendTelegram(`Cleanup old DB backups on ${target} done`);
         } catch (e) {
             sendTelegram(`Rsync/cleanup DB backup to ${target} FAILED: ${e.message}`);
         }
@@ -94,8 +94,8 @@ function job() {
     syncBackup(dumpFile);
 }
 
-// 👉 Chạy ngay khi start
+// Chạy ngay khi start
 job();
 
-// 👉 Lặp lại mỗi 1 giờ
+// Lặp lại mỗi 1 giờ
 setInterval(job, 60 * 60 * 1000);
