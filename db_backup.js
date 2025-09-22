@@ -16,7 +16,9 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const PUSHGATEWAY_URL = process.env.PUSHGATEWAY_URL;
 
-// Telegram
+// ======================
+// Gửi Telegram
+// ======================
 function sendTelegram(message) {
     axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
         chat_id: TELEGRAM_CHAT_ID,
@@ -24,7 +26,9 @@ function sendTelegram(message) {
     }).catch(err => console.error("Telegram send error:", err.message));
 }
 
-// Push metric
+// ======================
+// Gửi metric
+// ======================
 function pushMetric(status) {
     try {
         const pushUrl = `${PUSHGATEWAY_URL}/instance/${DB_NAME}`;
@@ -35,7 +39,9 @@ function pushMetric(status) {
     }
 }
 
+// ======================
 // Backup DB
+// ======================
 function backupDB() {
     try {
         const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -46,6 +52,11 @@ function backupDB() {
 
         sendTelegram(`Backup DB ${DB_NAME} OK: ${dumpFile}`);
         pushMetric(1);
+
+        // 👉 Xóa tất cả file cũ, chỉ giữ lại file mới nhất
+        execSync(`ls -1t ${BACKUP_DIR}/db_${DB_NAME}_*.sql.gz | tail -n +2 | xargs -r rm -f`);
+        console.log(`[${NODE_IP}] Cleanup old local DB backups, giữ lại bản mới nhất`);
+
         return dumpFile;
     } catch (e) {
         sendTelegram(`Backup DB ${DB_NAME} FAILED: ${e.message}`);
@@ -54,39 +65,37 @@ function backupDB() {
     }
 }
 
+// ======================
 // Rsync
+// ======================
 function syncBackup(file) {
     if (!file) return;
     RSYNC_TARGETS.forEach(target => {
+        if (!target) return;
         try {
             execSync(`rsync -avz ${file} root@${target}:${BACKUP_DIR}/`);
             sendTelegram(`Rsync DB backup to ${target} done!`);
-            // Cleanup old backups (>7 ngày) trên target
-            execSync(`ssh root@${target} "find ${BACKUP_DIR} -type f -mtime +7 -delete"`);
-            sendTelegram(`Cleanup old DB backups (>7d) on ${target} done!`);
+
+            // 👉 Cleanup: chỉ giữ lại bản mới nhất ở remote
+            execSync(`ssh root@${target} "ls -1t ${BACKUP_DIR}/db_${DB_NAME}_*.sql.gz | tail -n +2 | xargs -r rm -f"`);
+            sendTelegram(`Cleanup old DB backups trên ${target} xong`);
         } catch (e) {
             sendTelegram(`Rsync/cleanup DB backup to ${target} FAILED: ${e.message}`);
         }
     });
 }
 
-// Cleanup local backups >7 ngày
-function cleanupLocal() {
-    try {
-        execSync(`find ${BACKUP_DIR} -type f -mtime +7 -delete`);
-        console.log(`[${NODE_IP}] Cleanup old local DB backups done!`);
-    } catch (e) {
-        console.error(`[${NODE_IP}] Cleanup local DB backups error:`, e.message);
-    }
-}
-
+// ======================
 // Main job
+// ======================
 function job() {
     sendTelegram(`Starting DB backup for ${DB_NAME}...`);
     const dumpFile = backupDB();
     syncBackup(dumpFile);
-    cleanupLocal();
 }
 
+// 👉 Chạy ngay khi start
 job();
-setInterval(job, 60 * 60 * 1000); // chạy mỗi 1 giờ
+
+// 👉 Lặp lại mỗi 1 giờ
+setInterval(job, 60 * 60 * 1000);
