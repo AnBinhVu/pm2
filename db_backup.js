@@ -9,6 +9,8 @@ const NODE_IP = process.env.NODE_IP;
 const DB_USER = process.env.DB_USER || "root";
 const DB_PASS = process.env.DB_PASS || "";
 const DB_NAME = process.env.DB_NAME || "virtualizor";
+const MYSQLDUMP_BIN = "/usr/local/emps/bin/mysqldump";
+const MYSQL_SOCKET = "/usr/local/emps/var/mysql/mysql.sock";
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -37,12 +39,12 @@ function pushMetric(status) {
 function backupDB() {
     try {
         const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-        const dumpFile = `${BACKUP_DIR}/virtualizor_${timestamp}.sql.gz`;
+        const dumpFile = `${BACKUP_DIR}/db_${DB_NAME}_${timestamp}.sql.gz`;
 
         execSync(`mkdir -p ${BACKUP_DIR}`);
-        execSync(`mysqldump -u${DB_USER} -p${DB_PASS} ${DB_NAME} | gzip > ${dumpFile}`);
+        execSync(`${MYSQLDUMP_BIN} --socket=${MYSQL_SOCKET} -u${DB_USER} -p${DB_PASS} ${DB_NAME} | gzip > ${dumpFile}`);
 
-        sendTelegram(`Backup DB ${DB_NAME} OK`);
+        sendTelegram(`Backup DB ${DB_NAME} OK: ${dumpFile}`);
         pushMetric(1);
         return dumpFile;
     } catch (e) {
@@ -58,18 +60,33 @@ function syncBackup(file) {
     RSYNC_TARGETS.forEach(target => {
         try {
             execSync(`rsync -avz ${file} root@${target}:${BACKUP_DIR}/`);
-            sendTelegram(`Rsync DB backup to ${target} OK`);
+            sendTelegram(`Rsync DB backup to ${target} done!`);
+            // Cleanup old backups (>7 ngày) trên target
+            execSync(`ssh root@${target} "find ${BACKUP_DIR} -type f -mtime +7 -delete"`);
+            sendTelegram(`Cleanup old DB backups (>7d) on ${target} done!`);
         } catch (e) {
-            sendTelegram(`Rsync DB backup to ${target} FAILED: ${e.message}`);
+            sendTelegram(`Rsync/cleanup DB backup to ${target} FAILED: ${e.message}`);
         }
     });
 }
 
+// Cleanup local backups >7 ngày
+function cleanupLocal() {
+    try {
+        execSync(`find ${BACKUP_DIR} -type f -mtime +7 -delete`);
+        console.log(`[${NODE_IP}] Cleanup old local DB backups done!`);
+    } catch (e) {
+        console.error(`[${NODE_IP}] Cleanup local DB backups error:`, e.message);
+    }
+}
+
 // Main job
 function job() {
+    sendTelegram(`Starting DB backup for ${DB_NAME}...`);
     const dumpFile = backupDB();
     syncBackup(dumpFile);
+    cleanupLocal();
 }
 
 job();
-setInterval(job, 60 * 60 * 1000);
+setInterval(job, 60 * 60 * 1000); // chạy mỗi 1 giờ
