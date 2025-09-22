@@ -3,13 +3,22 @@ const axios = require("axios");
 require("dotenv").config();
 
 // ======================
-// Config
+// Load config từ .env
 // ======================
 const NODE_IP = process.env.NODE_IP;
 const VM_LIST = process.env.VM_LIST.split(",").map(v => v.trim());
+
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const PUSHGATEWAY_URL = process.env.PUSHGATEWAY_URL;
+
+// Map VMID → IP từ .env (VM_IPS=1008:192.168.80.120,1009:192.168.80.121)
+const VM_IPS = Object.fromEntries(
+    (process.env.VM_IPS || "")
+        .split(",")
+        .map(x => x.trim().split(":"))
+        .filter(x => x.length === 2)
+);
 
 // ======================
 // Gửi Telegram
@@ -22,7 +31,7 @@ function sendTelegram(message) {
 }
 
 // ======================
-// Gửi metric
+// Gửi metric lên Pushgateway
 // ======================
 function pushMetric(vmId, status) {
     try {
@@ -39,14 +48,11 @@ function pushMetric(vmId, status) {
 // ======================
 function pingVM(vmId) {
     try {
-        // Lấy IP từ Proxmox config
-        const conf = execSync(`qm config ${vmId}`).toString();
-        const match = conf.match(/ip=(\\d+\\.\\d+\\.\\d+\\.\\d+)/);
-        if (!match) {
-            console.log(`[${NODE_IP}] VM ${vmId} không tìm thấy IP trong config`);
+        const ip = VM_IPS[vmId];
+        if (!ip) {
+            console.log(`[${NODE_IP}] VM ${vmId} chưa khai báo IP trong .env`);
             return;
         }
-        const ip = match[1];
 
         try {
             execSync(`ping -c1 -W2 ${ip}`, { stdio: "ignore" });
@@ -73,11 +79,11 @@ function pingVM(vmId) {
 }
 
 // ======================
-// Monitor
+// Vòng lặp monitor
 // ======================
 function monitor() {
-    VM_LIST.forEach(pingVM);
+    VM_LIST.forEach(vmId => pingVM(vmId));
 }
 
-setInterval(monitor, 60000); // check mỗi phút
+setInterval(monitor, 60000); // check mỗi 60 giây
 monitor();
