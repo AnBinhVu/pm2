@@ -1,5 +1,5 @@
 # Pm2
-Script for pm2 /n
-Backup VM \n
+Script for pm2 
+Backup VM 
 Backup DB Virtualizor
 Monitor VM
