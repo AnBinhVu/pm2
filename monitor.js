@@ -67,5 +67,5 @@ function monitor() {
     VM_LIST.forEach(vmId => checkVM(vmId));
 }
 
-setInterval(monitor, 30000);
+setInterval(monitor, 60000);
 monitor();
