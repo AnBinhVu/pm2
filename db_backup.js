@@ -53,7 +53,7 @@ function backupDB() {
         sendTelegram(`Backup DB ${DB_NAME} OK: ${dumpFile}`);
         pushMetric(1);
 
-        // Xóa file cũ, giữ lại file mới nhất
+        // Cleanup local DB backups
         execSync(`ls -1t ${BACKUP_DIR}/db_${DB_NAME}_*.sql.gz | tail -n +2 | xargs -r rm -f`);
         console.log(`[${NODE_IP}] Cleanup old DB backups done`);
 
@@ -66,21 +66,48 @@ function backupDB() {
 }
 
 // ======================
+// Backup Config Virtualizor
+// ======================
+function backupConfig() {
+    try {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const confFile = `${BACKUP_DIR}/conf_virtualizor_${timestamp}.tar.gz`;
+
+        execSync(`tar -czf ${confFile} /usr/local/virtualizor/universal.php /usr/local/virtualizor/conf /etc/virtualizor`);
+
+        sendTelegram(`Backup config Virtualizor OK: ${confFile}`);
+
+        // Cleanup local config backups
+        execSync(`ls -1t ${BACKUP_DIR}/conf_virtualizor_*.tar.gz | tail -n +2 | xargs -r rm -f`);
+        console.log(`[${NODE_IP}] Cleanup old config backups done`);
+
+        return confFile;
+    } catch (e) {
+        sendTelegram(`Backup config Virtualizor FAILED: ${e.message}`);
+        return null;
+    }
+}
+
+// ======================
 // Rsync
 // ======================
-function syncBackup(file) {
-    if (!file) return;
+function syncBackup(files) {
+    if (!files || files.length === 0) return;
     RSYNC_TARGETS.forEach(target => {
         if (!target) return;
         try {
-            execSync(`rsync -avz ${file} root@${target}:${BACKUP_DIR}/`);
-            sendTelegram(`Rsync DB backup to ${target} done!`);
+            execSync(`rsync -avz ${files.join(" ")} root@${target}:${BACKUP_DIR}/`);
+            sendTelegram(`Rsync backups to ${target} done!`);
 
-            // Cleanup remote, giữ lại file mới nhất
-            execSync(`ssh root@${target} "ls -1t ${BACKUP_DIR}/db_${DB_NAME}_*.sql.gz | tail -n +2 | xargs -r rm -f"`);
-            sendTelegram(`Cleanup old DB backups on ${target} done`);
+            // Cleanup remote backups (DB + Config)
+            execSync(`ssh root@${target} "
+                cd ${BACKUP_DIR} &&
+                ls -1t db_${DB_NAME}_*.sql.gz | tail -n +2 | xargs -r rm -f &&
+                ls -1t conf_virtualizor_*.tar.gz | tail -n +2 | xargs -r rm -f
+            "`);
+            sendTelegram(`Cleanup old backups on ${target} done`);
         } catch (e) {
-            sendTelegram(`Rsync/cleanup DB backup to ${target} FAILED: ${e.message}`);
+            sendTelegram(`Rsync/cleanup backups to ${target} FAILED: ${e.message}`);
         }
     });
 }
@@ -89,9 +116,10 @@ function syncBackup(file) {
 // Main job
 // ======================
 function job() {
-    sendTelegram(`Starting DB backup for ${DB_NAME}...`);
-    const dumpFile = backupDB();
-    syncBackup(dumpFile);
+    sendTelegram(`Starting Virtualizor backup (DB + Config)...`);
+    const dbFile = backupDB();
+    const confFile = backupConfig();
+    syncBackup([dbFile, confFile].filter(Boolean));
 }
 
 // Chạy ngay khi start
