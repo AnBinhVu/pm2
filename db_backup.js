@@ -94,18 +94,23 @@ function backupConfig() {
         const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
         const confFile = `${BACKUP_DIR}/conf_virtualizor_${timestamp}.tar.gz`;
 
-        execSync(`tar -czf ${confFile} /usr/local/virtualizor/universal.php /usr/local/virtualizor/conf /etc/virtualizor`);
+        // Chỉ backup những đường dẫn tồn tại
+        const pathsToBackup = [
+            "/usr/local/virtualizor/universal.php",
+            "/usr/local/virtualizor/conf",
+            "/var/virtualizor"
+        ].filter(fs.existsSync);
 
-        log(`Backup config Virtualizor OK: ${confFile}`);
+        if (pathsToBackup.length === 0) throw new Error("No Virtualizor config files found");
+
+        execSync(`tar -czf ${confFile} ${pathsToBackup.join(" ")}`);
+
         sendTelegram(`Backup config Virtualizor OK: ${confFile}`);
-
-        // Cleanup local config backups (giữ 1 file mới nhất)
         execSync(`ls -1t ${BACKUP_DIR}/conf_virtualizor_*.tar.gz | tail -n +2 | xargs -r rm -f`);
-        log("Cleanup old config backups done");
+        console.log(`[${NODE_IP}] Cleanup old config backups done`);
 
         return confFile;
     } catch (e) {
-        log(`Backup config Virtualizor FAILED: ${e.message}`);
         sendTelegram(`Backup config Virtualizor FAILED: ${e.message}`);
         return null;
     }
