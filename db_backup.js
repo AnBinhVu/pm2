@@ -1,5 +1,6 @@
 const { execSync } = require("child_process");
 const axios = require("axios");
+const fs = require("fs");
 require("dotenv").config();
 
 const BACKUP_DIR = process.env.DB_BACKUP_DIR;
@@ -17,13 +18,31 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const PUSHGATEWAY_URL = process.env.PUSHGATEWAY_URL;
 
 // ======================
+// Log file nằm chung thư mục backup
+// ======================
+const LOG_FILE = `${BACKUP_DIR}/virtualizor_backup.log`;
+if (!fs.existsSync(BACKUP_DIR)) {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+}
+
+// ======================
+// Hàm ghi log
+// ======================
+function log(message) {
+    const timestamp = new Date().toISOString();
+    const fullMessage = `[${timestamp}] ${message}`;
+    console.log(fullMessage);
+    fs.appendFileSync(LOG_FILE, fullMessage + "\n");
+}
+
+// ======================
 // Gửi Telegram
 // ======================
 function sendTelegram(message) {
     axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
         chat_id: TELEGRAM_CHAT_ID,
         text: `[${NODE_IP}] ${message}`
-    }).catch(err => console.error("Telegram send error:", err.message));
+    }).catch(err => log("Telegram send error: " + err.message));
 }
 
 // ======================
@@ -34,8 +53,9 @@ function pushMetric(status) {
         const pushUrl = `${PUSHGATEWAY_URL}/metrics/job/db_backup/instance/${NODE_IP}`;
         const metric = `db_backup{db="${DB_NAME}", node="${NODE_IP}"} ${status}\n`;
         execSync(`echo '${metric}' | curl --data-binary @- ${pushUrl}`);
+        log(`Push metric: ${status}`);
     } catch (e) {
-        console.error("Push metric lỗi DB:", e.message);
+        log("Push metric lỗi DB: " + e.message);
     }
 }
 
@@ -47,18 +67,19 @@ function backupDB() {
         const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
         const dumpFile = `${BACKUP_DIR}/db_${DB_NAME}_${timestamp}.sql.gz`;
 
-        execSync(`mkdir -p ${BACKUP_DIR}`);
         execSync(`${MYSQLDUMP_BIN} --socket=${MYSQL_SOCKET} -u${DB_USER} -p${DB_PASS} ${DB_NAME} | gzip > ${dumpFile}`);
 
+        log(`Backup DB ${DB_NAME} OK: ${dumpFile}`);
         sendTelegram(`Backup DB ${DB_NAME} OK: ${dumpFile}`);
         pushMetric(1);
 
-        // Cleanup local DB backups
+        // Cleanup local DB backups (giữ 1 file mới nhất)
         execSync(`ls -1t ${BACKUP_DIR}/db_${DB_NAME}_*.sql.gz | tail -n +2 | xargs -r rm -f`);
-        console.log(`[${NODE_IP}] Cleanup old DB backups done`);
+        log("Cleanup old DB backups done");
 
         return dumpFile;
     } catch (e) {
+        log(`Backup DB ${DB_NAME} FAILED: ${e.message}`);
         sendTelegram(`Backup DB ${DB_NAME} FAILED: ${e.message}`);
         pushMetric(0);
         return null;
@@ -75,14 +96,16 @@ function backupConfig() {
 
         execSync(`tar -czf ${confFile} /usr/local/virtualizor/universal.php /usr/local/virtualizor/conf /etc/virtualizor`);
 
+        log(`Backup config Virtualizor OK: ${confFile}`);
         sendTelegram(`Backup config Virtualizor OK: ${confFile}`);
 
-        // Cleanup local config backups
+        // Cleanup local config backups (giữ 1 file mới nhất)
         execSync(`ls -1t ${BACKUP_DIR}/conf_virtualizor_*.tar.gz | tail -n +2 | xargs -r rm -f`);
-        console.log(`[${NODE_IP}] Cleanup old config backups done`);
+        log("Cleanup old config backups done");
 
         return confFile;
     } catch (e) {
+        log(`Backup config Virtualizor FAILED: ${e.message}`);
         sendTelegram(`Backup config Virtualizor FAILED: ${e.message}`);
         return null;
     }
@@ -97,16 +120,19 @@ function syncBackup(files) {
         if (!target) return;
         try {
             execSync(`rsync -avz ${files.join(" ")} root@${target}:${BACKUP_DIR}/`);
+            log(`Rsync backups to ${target} done`);
             sendTelegram(`Rsync backups to ${target} done!`);
 
-            // Cleanup remote backups (DB + Config)
+            // Cleanup remote backups
             execSync(`ssh root@${target} "
                 cd ${BACKUP_DIR} &&
                 ls -1t db_${DB_NAME}_*.sql.gz | tail -n +2 | xargs -r rm -f &&
                 ls -1t conf_virtualizor_*.tar.gz | tail -n +2 | xargs -r rm -f
             "`);
+            log(`Cleanup old backups on ${target} done`);
             sendTelegram(`Cleanup old backups on ${target} done`);
         } catch (e) {
+            log(`Rsync/cleanup backups to ${target} FAILED: ${e.message}`);
             sendTelegram(`Rsync/cleanup backups to ${target} FAILED: ${e.message}`);
         }
     });
@@ -116,10 +142,12 @@ function syncBackup(files) {
 // Main job
 // ======================
 function job() {
-    sendTelegram(`Starting Virtualizor backup (DB + Config)...`);
+    log("Starting Virtualizor backup (DB + Config)...");
+    sendTelegram("Starting Virtualizor backup (DB + Config)...");
     const dbFile = backupDB();
     const confFile = backupConfig();
     syncBackup([dbFile, confFile].filter(Boolean));
+    log("Backup job finished.\n");
 }
 
 // Chạy ngay khi start
