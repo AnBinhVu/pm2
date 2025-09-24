@@ -1,11 +1,10 @@
-const { execSync } = require("child_process");
+const { spawn } = require("child_process");
 const axios = require("axios");
 require("dotenv").config();
 
-const BACKUP_DIR = process.env.VM_BACKUP_DIR;
-const RSYNC_TARGETS = process.env.RSYNC_TARGETS.split(",").map(t => t.trim()).filter(Boolean);
-const NODE_IP = process.env.NODE_IP;
-const BACKUP_TYPE = process.env.BACKUP_TYPE || "vm"; // "vm" hoặc "db"
+const BACKUP_DIR = process.env.VM_BACKUP_DIR || "/var/backups/vm";
+const RSYNC_TARGETS = (process.env.RSYNC_TARGETS || "").split(",").map(t => t.trim()).filter(Boolean);
+const NODE_IP = process.env.NODE_IP || "local";
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -15,6 +14,7 @@ const PUSHGATEWAY_URL = process.env.PUSHGATEWAY_URL;
 // Gửi Telegram
 // ======================
 function sendTelegram(message) {
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
     axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
         chat_id: TELEGRAM_CHAT_ID,
         text: `[${NODE_IP}] ${message}`
@@ -26,96 +26,116 @@ function sendTelegram(message) {
 // ======================
 function pushMetric(vmId, status) {
     if (!PUSHGATEWAY_URL) return;
-    try {
-        const pushUrl = `${PUSHGATEWAY_URL}/metrics/job/vm_backup/instance/${vmId}`;
-        const metric = `vm_backup{vm="${vmId}", node="${NODE_IP}"} ${status}\n`;
-        execSync(`echo '${metric}' | curl --data-binary @- ${pushUrl}`);
-    } catch (e) {
-        console.error(`[${NODE_IP}] Push metric lỗi cho VM ${vmId}:`, e.message);
-    }
+    const pushUrl = `${PUSHGATEWAY_URL}/metrics/job/vm_backup/instance/${vmId}`;
+    const metric = `vm_backup{vm="${vmId}", node="${NODE_IP}"} ${status}\n`;
+    const curl = spawn("curl", ["--data-binary", `@-`, pushUrl]);
+    curl.stdin.write(metric);
+    curl.stdin.end();
 }
 
 // ======================
-// Cleanup backup local hoặc remote
-// ======================
-function cleanupBackups(vmId, targetDir, isRemote = false) {
-    const prefix = isRemote ? `ssh root@${vmId} "` : "";
-    const suffix = isRemote ? `"` : "";
-    try {
-        if (BACKUP_TYPE === "vm") {
-            execSync(`${prefix}cd ${targetDir} && ls -1t vzdump-qemu-${vmId}-*.vma.* 2>/dev/null | tail -n +2 | xargs -r rm -f${suffix}`);
-            execSync(`${prefix}cd ${targetDir} && ls -1t vzdump-qemu-${vmId}-*.log 2>/dev/null | tail -n +2 | xargs -r rm -f${suffix}`);
-            execSync(`${prefix}cd ${targetDir} && rm -f .vzdump-qemu-${vmId}-*.vma.lzo.gdpqbO${suffix}`);
-        } else if (BACKUP_TYPE === "db") {
-            execSync(`${prefix}cd ${targetDir} && ls -1t db_virtualizor_*.sql.* 2>/dev/null | tail -n +2 | xargs -r rm -f${suffix}`);
-        }
-        console.log(`[${NODE_IP}] Cleanup old backups in ${isRemote ? "remote" : "local"} dir ${targetDir} done for ${vmId}`);
-    } catch (e) {
-        console.error(`[${NODE_IP}] Cleanup error (${isRemote ? "remote" : "local"}) for ${vmId}:`, e.message);
-    }
-}
-
-// ======================
-// Backup VM hoặc DB
+// Backup VM/DB
 // ======================
 function backupVM(vmId) {
-    try {
-        console.log(`[${NODE_IP}] Backup ${BACKUP_TYPE.toUpperCase()} ${vmId}...`);
+    return new Promise((resolve) => {
+        console.log(`[${NODE_IP}] Backup ${process.env.BACKUP_TYPE} ${vmId}...`);
+        sendTelegram(`Backup ${process.env.BACKUP_TYPE} ${vmId} bắt đầu...`);
 
-        execSync(`mkdir -p ${BACKUP_DIR}`);
+        // Tạo thư mục backup
+        spawn("mkdir", ["-p", BACKUP_DIR]);
 
-        if (BACKUP_TYPE === "vm") {
-            // vzdump VM
-            execSync(`vzdump ${vmId} --dumpdir ${BACKUP_DIR} --mode snapshot --compress lzo --remove 0`, { stdio: "inherit" });
-        } else if (BACKUP_TYPE === "db") {
+        let backupCmd;
+        if (process.env.BACKUP_TYPE === "vm") {
+            backupCmd = spawn("vzdump", [vmId, "--dumpdir", BACKUP_DIR, "--mode", "snapshot", "--compress", "lzo", "--remove", "0"], { stdio: "inherit" });
+        } else if (process.env.BACKUP_TYPE === "db") {
             const timestamp = new Date().toISOString().replace(/[:]/g, "-");
             const backupFile = `${BACKUP_DIR}/db_virtualizor_${timestamp}.sql.gz`;
-            execSync(`mysqldump -u ${process.env.DB_USER} -p${process.env.DB_PASS} ${vmId} | gzip > ${backupFile}`);
+            backupCmd = spawn("bash", ["-c", `mysqldump -u ${process.env.DB_USER} -p${process.env.DB_PASS} ${vmId} | gzip > ${backupFile}`], { stdio: "inherit" });
         }
 
-        sendTelegram(`Backup ${BACKUP_TYPE.toUpperCase()} ${vmId} thành công`);
-        pushMetric(vmId, 1);
-
-        // Cleanup local, giữ 1 file mới nhất
-        cleanupBackups(vmId, BACKUP_DIR);
-
-    } catch (e) {
-        console.error(`[${NODE_IP}] Backup ${BACKUP_TYPE.toUpperCase()} ${vmId} FAILED:`, e.message);
-        sendTelegram(`Backup ${BACKUP_TYPE.toUpperCase()} ${vmId} thất bại: ${e.message}`);
-        pushMetric(vmId, 0);
-    }
+        backupCmd.on("close", (code) => {
+            if (code === 0) {
+                sendTelegram(`Backup ${process.env.BACKUP_TYPE} ${vmId} thành công`);
+                pushMetric(vmId, 1);
+                cleanupLocal(vmId).then(() => resolve(vmId));
+            } else {
+                sendTelegram(`Backup ${process.env.BACKUP_TYPE} ${vmId} thất bại (code ${code})`);
+                pushMetric(vmId, 0);
+                resolve(null);
+            }
+        });
+    });
 }
 
 // ======================
-// Rsync sang các node khác
+// Cleanup file cũ local
+// ======================
+function cleanupLocal(vmId) {
+    return new Promise((resolve) => {
+        let cmd;
+        if (process.env.BACKUP_TYPE === "vm") {
+            cmd = `ls -1t ${BACKUP_DIR}/vzdump-qemu-${vmId}-*.vma.* | tail -n +2 | xargs -r rm -f; ls -1t ${BACKUP_DIR}/vzdump-qemu-${vmId}-*.log | tail -n +2 | xargs -r rm -f; rm -f ${BACKUP_DIR}/.vzdump-qemu-${vmId}-*.vma.lzo.gdpqbO`;
+        } else if (process.env.BACKUP_TYPE === "db") {
+            cmd = `ls -1t ${BACKUP_DIR}/db_virtualizor_*.sql.* | tail -n +2 | xargs -r rm -f`;
+        }
+        const cleanup = spawn("bash", ["-c", cmd]);
+        cleanup.on("close", () => {
+            console.log(`[${NODE_IP}] Cleanup local old backups for ${vmId} done`);
+            resolve();
+        });
+    });
+}
+
+// ======================
+// Rsync + cleanup remote
 // ======================
 function syncBackup(vmId) {
     RSYNC_TARGETS.forEach(target => {
         if (!target) return;
-        try {
-            execSync(`rsync -avz ${BACKUP_DIR}/ root@${target}:${BACKUP_DIR}/`);
-            sendTelegram(`Rsync ${BACKUP_TYPE.toUpperCase()} backups sang ${target} thành công`);
+        const rsyncCmd = spawn("rsync", ["-avz", `${BACKUP_DIR}/`, `root@${target}:${BACKUP_DIR}/`], { stdio: "inherit" });
 
-            // Cleanup remote, giữ file mới nhất
-            cleanupBackups(vmId, BACKUP_DIR, true);
-            sendTelegram(`Cleanup old backups trên ${target} done`);
-        } catch (e) {
-            console.error(`[${NODE_IP}] Rsync/Cleanup error to ${target}:`, e.message);
-            sendTelegram(`Rsync/Cleanup lỗi sang ${target}: ${e.message}`);
-        }
+        rsyncCmd.on("close", (code) => {
+            if (code === 0) {
+                sendTelegram(`Rsync VM/DB backups sang ${target} thành công`);
+
+                // Cleanup remote: giữ bản mới nhất
+                let remoteCmd;
+                if (process.env.BACKUP_TYPE === "vm") {
+                    remoteCmd = `
+                        cd ${BACKUP_DIR} &&
+                        for id in $(ls vzdump-qemu-*.vma.* 2>/dev/null | sed -E 's/vzdump-qemu-([0-9]+)-.*/\\1/' | sort -u); do
+                            ls -1t vzdump-qemu-$id-*.vma.* | tail -n +2 | xargs -r rm -f
+                            ls -1t vzdump-qemu-$id-*.log | tail -n +2 | xargs -r rm -f
+                            rm -f .vzdump-qemu-$id-*.vma.lzo.gdpqbO
+                        done
+                    `;
+                } else {
+                    remoteCmd = `cd ${BACKUP_DIR} && ls -1t db_virtualizor_*.sql.* | tail -n +2 | xargs -r rm -f`;
+                }
+
+                const ssh = spawn("ssh", [`root@${target}`, remoteCmd], { stdio: "inherit" });
+                ssh.on("close", () => {
+                    sendTelegram(`Cleanup old backups trên ${target} done`);
+                });
+            } else {
+                sendTelegram(`Rsync VM/DB backups sang ${target} thất bại`);
+            }
+        });
     });
 }
 
 // ======================
 // Main job
 // ======================
-function job() {
-    const VM_LIST = process.env.VM_LIST.split(",").map(v => v.trim()).filter(Boolean);
-    VM_LIST.forEach(vmId => {
-        backupVM(vmId);
-        syncBackup(vmId);
-    });
-    console.log(`[${NODE_IP}] Backup job finished.`);
+async function job() {
+    const VM_LIST = (process.env.VM_LIST || "").split(",").map(v => v.trim()).filter(Boolean);
+
+    for (const vmId of VM_LIST) {
+        const successVm = await backupVM(vmId);
+        if (successVm) {
+            syncBackup(successVm);
+        }
+    }
 }
 
 // Chạy ngay khi start
