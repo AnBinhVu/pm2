@@ -42,6 +42,30 @@ function pushMetric(vmId, status) {
 }
 
 // ======================
+// Cleanup backup files, giữ 1 bản mới nhất
+// ======================
+function cleanupBackups(dir, type, vmId = null) {
+    try {
+        if (type === "vm") {
+            const idPattern = vmId ? [vmId] : fs.readdirSync(dir)
+                .filter(f => f.match(/^vzdump-qemu-(\d+)-.*\.vma\./))
+                .map(f => f.match(/^vzdump-qemu-(\d+)-/)[1])
+                .filter((v, i, a) => a.indexOf(v) === i);
+
+            idPattern.forEach(id => {
+                execSync(`ls -1t ${dir}/vzdump-qemu-${id}-*.vma.* | tail -n +2 | xargs -r rm -f`);
+                execSync(`ls -1t ${dir}/vzdump-qemu-${id}-*.log | tail -n +2 | xargs -r rm -f`);
+            });
+        } else if (type === "db") {
+            execSync(`ls -1t ${dir}/db_virtualizor_*.sql.gz | tail -n +2 | xargs -r rm -f`);
+        }
+        log(`Cleanup old backups in ${dir} done`);
+    } catch (e) {
+        log(`Cleanup error in ${dir}: ${e.message}`, true);
+    }
+}
+
+// ======================
 // Backup VM/DB
 // ======================
 function backupVM(vmId) {
@@ -50,19 +74,13 @@ function backupVM(vmId) {
         execSync(`mkdir -p ${BACKUP_DIR}`);
 
         if (process.env.BACKUP_TYPE === "vm") {
-            execSync(
-                `vzdump ${vmId} --dumpdir ${BACKUP_DIR} --mode snapshot --compress lzo --remove 0`,
-                { stdio: "inherit" }
-            );
-            // Cleanup local: giữ 1 bản mới nhất cho VM
-            execSync(`ls -1t ${BACKUP_DIR}/vzdump-qemu-${vmId}-*.vma.* | tail -n +2 | xargs -r rm -f`);
-            execSync(`ls -1t ${BACKUP_DIR}/vzdump-qemu-${vmId}-*.log | tail -n +2 | xargs -r rm -f`);
+            execSync(`vzdump ${vmId} --dumpdir ${BACKUP_DIR} --mode snapshot --compress lzo --remove 0`, { stdio: "inherit" });
+            cleanupBackups(BACKUP_DIR, "vm", vmId);
         } else if (process.env.BACKUP_TYPE === "db") {
             const timestamp = new Date().toISOString().replace(/[:]/g, "-");
             const backupFile = path.join(BACKUP_DIR, `db_virtualizor_${vmId}_${timestamp}.sql.gz`);
             execSync(`mysqldump -u${process.env.DB_USER} -p${process.env.DB_PASS} ${vmId} | gzip > ${backupFile}`);
-            // Cleanup local: giữ 1 bản mới nhất cho DB
-            execSync(`ls -1t ${BACKUP_DIR}/db_virtualizor_${vmId}_*.sql.gz | tail -n +2 | xargs -r rm -f`);
+            cleanupBackups(BACKUP_DIR, "db", vmId);
         }
 
         log(`Backup VM/DB ${vmId} thành công`);
@@ -76,7 +94,7 @@ function backupVM(vmId) {
 }
 
 // ======================
-// Rsync sang tất cả node khác, giữ 1 bản mới nhất
+// Rsync và cleanup remote
 // ======================
 function syncBackup() {
     RSYNC_TARGETS.forEach(target => {
@@ -86,18 +104,18 @@ function syncBackup() {
             log(`Rsync VM/DB backups sang ${target} thành công`);
             sendTelegram(`Rsync VM/DB backups sang ${target} thành công`);
 
-            // Cleanup remote: giữ 1 bản mới nhất
-            execSync(`ssh root@${target} "
+            // Cleanup remote
+            const cleanupCmd = `
                 cd ${BACKUP_DIR} &&
                 if [ '${process.env.BACKUP_TYPE}' = 'vm' ]; then
-                    for id in \$(ls vzdump-qemu-*.vma.* 2>/dev/null | sed -E 's/vzdump-qemu-([0-9]+)-.*/\\1/' | sort -u); do
-                        ls -1t vzdump-qemu-\$id-*.vma.* | tail -n +2 | xargs -r rm -f
-                        ls -1t vzdump-qemu-\$id-*.log | tail -n +2 | xargs -r rm -f
+                    for id in $(ls vzdump-qemu-*.vma.* 2>/dev/null | sed -E 's/vzdump-qemu-([0-9]+)-.*/\\1/' | sort -u); do
+                        ls -1t vzdump-qemu-$id-*.vma.* | tail -n +2 | xargs -r rm -f
+                        ls -1t vzdump-qemu-$id-*.log | tail -n +2 | xargs -r rm -f
                     done
                 else
                     ls -1t db_virtualizor_*.sql.gz | tail -n +2 | xargs -r rm -f
-                fi
-            "`);
+                fi`;
+            execSync(`ssh root@${target} "${cleanupCmd}"`);
             log(`Cleanup old backups trên ${target} done`);
             sendTelegram(`Cleanup old backups trên ${target} done`);
         } catch (e) {
