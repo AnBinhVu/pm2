@@ -100,12 +100,27 @@ function syncBackup() {
     RSYNC_TARGETS.forEach(target => {
         if (!target) return;
         try {
+            // 1. Cleanup remote trước khi rsync
+            const cleanupCmd = `
+                cd ${BACKUP_DIR} &&
+                if [ '${process.env.BACKUP_TYPE}' = 'vm' ]; then
+                    for id in $(ls vzdump-qemu-*.vma.* 2>/dev/null | sed -E 's/vzdump-qemu-([0-9]+)-.*/\\1/' | sort -u); do
+                        ls -1t vzdump-qemu-$id-*.vma.* | tail -n +1 | xargs -r rm -f
+                        ls -1t vzdump-qemu-$id-*.log | tail -n +1 | xargs -r rm -f
+                    done
+                else
+                    ls -1t db_virtualizor_*.sql.gz | tail -n +1 | xargs -r rm -f
+                fi`;
+            execSync(`ssh root@${target} "${cleanupCmd}"`);
+            log(`Remote ${target}: cleanup old backups trước khi rsync`);
+
+            // 2. Rsync file mới
             execSync(`rsync -avz ${BACKUP_DIR}/ root@${target}:${BACKUP_DIR}/`);
             log(`Rsync VM/DB backups sang ${target} thành công`);
             sendTelegram(`Rsync VM/DB backups sang ${target} thành công`);
 
-            // Cleanup remote
-            const cleanupCmd = `
+            // 3. Cleanup remote để chỉ giữ file mới nhất
+            const cleanupCmd2 = `
                 cd ${BACKUP_DIR} &&
                 if [ '${process.env.BACKUP_TYPE}' = 'vm' ]; then
                     for id in $(ls vzdump-qemu-*.vma.* 2>/dev/null | sed -E 's/vzdump-qemu-([0-9]+)-.*/\\1/' | sort -u); do
@@ -115,15 +130,15 @@ function syncBackup() {
                 else
                     ls -1t db_virtualizor_*.sql.gz | tail -n +2 | xargs -r rm -f
                 fi`;
-            execSync(`ssh root@${target} "${cleanupCmd}"`);
-            log(`Cleanup old backups trên ${target} done`);
-            sendTelegram(`Cleanup old backups trên ${target} done`);
+            execSync(`ssh root@${target} "${cleanupCmd2}"`);
+            log(`Remote ${target}: cleanup old backups sau khi rsync done`);
         } catch (e) {
             log(`Rsync/Cleanup lỗi sang ${target}: ${e.message}`, true);
             sendTelegram(`Rsync/Cleanup lỗi sang ${target}: ${e.message}`);
         }
     });
 }
+
 
 // ======================
 // Main job
