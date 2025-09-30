@@ -115,10 +115,15 @@ function syncBackup(vmId) {
                 if (process.env.BACKUP_TYPE === "vm") {
                     remoteCmd = `
                         cd ${BACKUP_DIR} &&
-                        for id in $(ls vzdump-qemu-*.vma.* 2>/dev/null | sed -E 's/vzdump-qemu-([0-9]+)-.*/\\1/' | sort -u); do
-                            ls -1t vzdump-qemu-$id-*.vma.* | tail -n +2 | xargs -r rm -f
-                            ls -1t vzdump-qemu-$id-*.log | tail -n +2 | xargs -r rm -f
-                            rm -f .vzdump-qemu-$id-*.vma.lzo.gdpqbO
+                        for id in $(ls vzdump-*-*.log 2>/dev/null | sed -E 's/vzdump-(qemu|lxc)-([0-9]+)-.*/\\2/' | sort -u); do
+                            # QEMU
+                            ls -1t vzdump-qemu-$id-*.vma.* 2>/dev/null | tail -n +2 | xargs -r rm -f
+                            ls -1t vzdump-qemu-$id-*.log   2>/dev/null | tail -n +2 | xargs -r rm -f
+                            rm -f .vzdump-qemu-$id-*.vma.lzo.* 2>/dev/null
+
+                            # LXC
+                            ls -1t vzdump-lxc-$id-*.tar.*  2>/dev/null | tail -n +2 | xargs -r rm -f
+                            ls -1t vzdump-lxc-$id-*.log    2>/dev/null | tail -n +2 | xargs -r rm -f
                         done
                     `;
                 } else {
@@ -135,6 +140,7 @@ function syncBackup(vmId) {
         });
     });
 }
+
 
 // ======================
 // Main job
