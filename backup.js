@@ -74,10 +74,21 @@ function cleanupLocal(vmId) {
     return new Promise((resolve) => {
         let cmd;
         if (process.env.BACKUP_TYPE === "vm") {
-            cmd = `ls -1t ${BACKUP_DIR}/vzdump-qemu-${vmId}-*.vma.* | tail -n +2 | xargs -r rm -f; ls -1t ${BACKUP_DIR}/vzdump-qemu-${vmId}-*.log | tail -n +2 | xargs -r rm -f; rm -f ${BACKUP_DIR}/.vzdump-qemu-${vmId}-*.vma.lzo.gdpqbO`;
+            // Cleanup cả qemu (KVM) và lxc (container)
+            cmd = `
+                # QEMU backups
+                ls -1t ${BACKUP_DIR}/vzdump-qemu-${vmId}-*.vma.* 2>/dev/null | tail -n +2 | xargs -r rm -f;
+                ls -1t ${BACKUP_DIR}/vzdump-qemu-${vmId}-*.log   2>/dev/null | tail -n +2 | xargs -r rm -f;
+                rm -f ${BACKUP_DIR}/.vzdump-qemu-${vmId}-*.vma.lzo.* 2>/dev/null;
+
+                # LXC backups
+                ls -1t ${BACKUP_DIR}/vzdump-lxc-${vmId}-*.tar.*  2>/dev/null | tail -n +2 | xargs -r rm -f;
+                ls -1t ${BACKUP_DIR}/vzdump-lxc-${vmId}-*.log    2>/dev/null | tail -n +2 | xargs -r rm -f;
+            `;
         } else if (process.env.BACKUP_TYPE === "db") {
             cmd = `ls -1t ${BACKUP_DIR}/db_virtualizor_*.sql.* | tail -n +2 | xargs -r rm -f`;
         }
+
         const cleanup = spawn("bash", ["-c", cmd]);
         cleanup.on("close", () => {
             console.log(`[${NODE_IP}] Cleanup local old backups for ${vmId} done`);
@@ -85,6 +96,7 @@ function cleanupLocal(vmId) {
         });
     });
 }
+
 
 // ======================
 // Rsync + cleanup remote
