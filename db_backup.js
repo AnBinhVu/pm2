@@ -25,7 +25,9 @@ const LOG_FILE = path.join(BACKUP_DIR, "backup.log");
 const ERR_FILE = path.join(BACKUP_DIR, "backup-error.log");
 
 function log(message, isError = false) {
-    const line = `[${new Date().toISOString()}] ${message}\n`;
+    const utcTime = new Date().toISOString();
+    const localTime = new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" });
+    const line = `[UTC ${utcTime} | Local ${localTime}] ${message}\n`;
     fs.appendFileSync(isError ? ERR_FILE : LOG_FILE, line);
     console[isError ? "error" : "log"](line.trim());
 }
@@ -89,7 +91,6 @@ function backupConfig() {
     try {
         const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
         const confFile = path.join(BACKUP_DIR, `conf_virtualizor_${timestamp}.tar.gz`);
-        // Lưu config từ /var/virtualizor/log và /usr/local/virtualizor nếu có
         execSync(`tar -czf ${confFile} /var/virtualizor/log /usr/local/virtualizor/universal.php /usr/local/virtualizor/conf`, { stdio: "ignore" });
         log(`Backup config Virtualizor OK: ${confFile}`);
         sendTelegram(`Backup config Virtualizor OK`);
@@ -114,12 +115,10 @@ function syncBackup(files) {
     RSYNC_TARGETS.forEach(target => {
         if (!target) return;
         try {
-            // Sync backups + logs
             execSync(`rsync -avz ${files.join(" ")} ${LOG_FILE} ${ERR_FILE} root@${target}:${BACKUP_DIR}/`);
             log(`Rsync backups + logs to ${target} done`);
             sendTelegram(`Rsync backups + logs to ${target} done`);
 
-            // Cleanup remote old files (giữ lại 1 bản mỗi loại)
             execSync(`ssh root@${target} "
                 cd ${BACKUP_DIR} &&
                 ls -1t db_${DB_NAME}_*.sql.gz | tail -n +2 | xargs -r rm -f &&
