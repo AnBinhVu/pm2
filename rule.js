@@ -1,5 +1,6 @@
 const { execSync } = require("child_process");
 const axios = require("axios");
+const ping = require("ping");
 require("dotenv").config();
 
 // ======================
@@ -46,7 +47,7 @@ function pushMetric(vmId, status) {
 // ======================
 // Ping VM
 // ======================
-function pingVM(vmId) {
+async function pingVM(vmId) {
     try {
         const ip = VM_IPS[vmId];
         if (!ip) {
@@ -54,11 +55,12 @@ function pingVM(vmId) {
             return;
         }
 
-        try {
-            execSync(`ping -c1 -W2 ${ip}`, { stdio: "ignore" });
+        const res = await ping.promise.probe(ip, { timeout: 2, extra: ["-c1"] });
+
+        if (res.alive) {
             console.log(`[${NODE_IP}] VM ${vmId} (${ip}) online`);
             pushMetric(vmId, 1);
-        } catch {
+        } else {
             console.warn(`[${NODE_IP}] VM ${vmId} (${ip}) mất mạng -> reboot`);
             sendTelegram(`VM ${vmId} (${ip}) mất mạng, reboot...`);
 
@@ -81,8 +83,10 @@ function pingVM(vmId) {
 // ======================
 // Vòng lặp monitor
 // ======================
-function monitor() {
-    VM_LIST.forEach(vmId => pingVM(vmId));
+async function monitor() {
+    for (const vmId of VM_LIST) {
+        await pingVM(vmId);
+    }
 }
 
 setInterval(monitor, 60000); // check mỗi 60 giây
