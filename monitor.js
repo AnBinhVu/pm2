@@ -1,5 +1,6 @@
-const { execSync } = require("child_process");
+const { execSync, spawn } = require("child_process");
 const axios = require("axios");
+const ping = require("ping");
 require("dotenv").config();
 
 // ======================
@@ -7,10 +8,17 @@ require("dotenv").config();
 // ======================
 const NODE_IP = process.env.NODE_IP;
 const VM_LIST = process.env.VM_LIST.split(",").map(v => v.trim());
-
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const PUSHGATEWAY_URL = process.env.PUSHGATEWAY_URL;
+
+// Map VMID → IP từ .env (VM_IPS=1008:192.168.80.120,1009:192.168.80.121)
+const VM_IPS = Object.fromEntries(
+    (process.env.VM_IPS || "")
+        .split(",")
+        .map(x => x.trim().split(":"))
+        .filter(x => x.length === 2)
+);
 
 // ======================
 // Gửi Telegram
@@ -19,53 +27,67 @@ function sendTelegram(message) {
     axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
         chat_id: TELEGRAM_CHAT_ID,
         text: `[${NODE_IP}] ${message}`
-    }).catch(err => console.error("Telegram send error:", err.message));
+    }).catch(() => {});
 }
 
 // ======================
 // Push metric lên Pushgateway
 // ======================
 function pushMetric(vmId, status) {
-    try {
-        // Chỉ định job riêng: vm_autofix, instance là vmId
-        const pushUrl = `${PUSHGATEWAY_URL}/metrics/job/vm_autofix/instance/${vmId}`;
-        const metric = `vm_autofix{vm="${vmId}", node="${NODE_IP}"} ${status}\n`;
-        execSync(`echo '${metric}' | curl --data-binary @- ${pushUrl}`);
-    } catch (e) {
-        console.error(`Push metric lỗi cho VM ${vmId}:`, e.message);
-    }
+    if (!PUSHGATEWAY_URL) return;
+    const pushUrl = `${PUSHGATEWAY_URL}/metrics/job/vm_monitor/instance/${vmId}`;
+    const metric = `vm_network{vm="${vmId}", node="${NODE_IP}"} ${status}\n`;
+    const curl = spawn("curl", ["-s", "--data-binary", "@-", pushUrl]);
+    curl.stdin.write(metric);
+    curl.stdin.end();
 }
 
 // ======================
-// Kiểm tra và restart VM nếu cần
+// Ping VM
 // ======================
-function checkVM(vmId) {
-    try {
-        const status = execSync(`qm status ${vmId}`).toString().trim();
+async function pingCheck(ip) {
+    const res = await ping.promise.probe(ip, { timeout: 2, extra: ["-c1"] });
+    return res.alive;
+}
 
-        if (!status.includes("running")) {
-            sendTelegram(`VM ${vmId} không chạy, đang cố gắng restart...`);
-            execSync(`qm start ${vmId}`);
-            sendTelegram(`VM ${vmId} đã restart`);
-            pushMetric(vmId, 1); // restart thành công
+async function pingVM(vmId) {
+    const ip = VM_IPS[vmId];
+    if (!ip) {
+        console.log(`[${NODE_IP}] VM ${vmId} chưa khai báo IP trong .env`);
+        return;
+    }
+
+    try {
+        const alive = await pingCheck(ip);
+        if (alive) {
+            console.log(`[${NODE_IP}] VM ${vmId} (${ip}) online`);
+            pushMetric(vmId, 1);
         } else {
-            pushMetric(vmId, 1); // VM đang chạy OK
+            console.warn(`[${NODE_IP}] VM ${vmId} (${ip}) mất mạng -> reboot`);
+            sendTelegram(`VM ${vmId} (${ip}) mất mạng, reboot...`);
+            try {
+                execSync(`qm reboot ${vmId}`);
+            } catch {
+                execSync(`qm stop ${vmId} && qm start ${vmId}`);
+            }
+            sendTelegram(`VM ${vmId} đã reboot`);
+            pushMetric(vmId, 0);
         }
     } catch (e) {
-        sendTelegram(`Lỗi khi kiểm tra VM ${vmId}: ${e.message}`);
-        pushMetric(vmId, 0); // lỗi
+        console.error(`[${NODE_IP}] Lỗi check VM ${vmId}:`, e.message);
+        sendTelegram(`Lỗi check VM ${vmId}: ${e.message}`);
+        pushMetric(vmId, 0);
     }
 }
 
 // ======================
 // Vòng lặp monitor
 // ======================
-function monitor() {
-    VM_LIST.forEach(checkVM);
+async function monitor() {
+    for (const vmId of VM_LIST) {
+        await pingVM(vmId);
+    }
 }
 
-// Chạy ngay khi start
+setInterval(monitor, 60000); // check mỗi 60 giây
 monitor();
-
-// Lặp lại mỗi 1 phút
-setInterval(monitor, 60 * 1000);
