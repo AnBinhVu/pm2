@@ -1,4 +1,4 @@
-const { execSync } = require("child_process");
+const { execSync, spawn } = require("child_process");
 const axios = require("axios");
 const ping = require("ping");
 require("dotenv").config();
@@ -25,6 +25,7 @@ const VM_IPS = Object.fromEntries(
 // Gửi Telegram
 // ======================
 function sendTelegram(message) {
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
     axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
         chat_id: TELEGRAM_CHAT_ID,
         text: `[${NODE_IP}] ${message}`
@@ -54,9 +55,8 @@ function pushMetric(vmId, status) {
     });
 }
 
-
 // ======================
-// Ping VM (double-check)
+// Ping VM
 // ======================
 async function pingCheck(ip) {
     const res = await ping.promise.probe(ip, { timeout: 2, extra: ["-c1"] });
