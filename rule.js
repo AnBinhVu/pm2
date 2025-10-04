@@ -35,14 +35,25 @@ function sendTelegram(message) {
 // Gửi metric lên Pushgateway
 // ======================
 function pushMetric(vmId, status) {
-    try {
-        const pushUrl = `${PUSHGATEWAY_URL}/instance/${vmId}`;
-        const metric = `vm_network{vm="${vmId}", node="${NODE_IP}"} ${status}\n`;
-        execSync(`echo '${metric}' | curl --data-binary @- ${pushUrl}`);
-    } catch (e) {
-        console.error(`Push metric lỗi cho VM ${vmId}:`, e.message);
-    }
+    if (!PUSHGATEWAY_URL) return;
+    const pushUrl = `${PUSHGATEWAY_URL}/metrics/job/vm_monitor/instance/${vmId}`;
+    const metric = `vm_network{vm="${vmId}", node="${NODE_IP}"} ${status}\n`;
+    const curl = spawn("curl", ["--data-binary", "@-", pushUrl]);
+    curl.stdin.write(metric);
+    curl.stdin.end();
+    curl.stdout.on("data", (data) => {
+        console.log(`[${NODE_IP}] Push metric VM ${vmId} response: ${data.toString().trim()}`);
+    });
+    curl.stderr.on("data", (data) => {
+        console.error(`[${NODE_IP}] Push metric VM ${vmId} error: ${data.toString().trim()}`);
+    });
+    curl.on("close", (code) => {
+        if (code !== 0) {
+            console.error(`[${NODE_IP}] Push metric VM ${vmId} curl exited with code ${code}`);
+        }
+    });
 }
+
 
 // ======================
 // Ping VM (double-check)
