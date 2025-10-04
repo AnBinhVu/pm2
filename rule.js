@@ -45,24 +45,36 @@ function pushMetric(vmId, status) {
 }
 
 // ======================
-// Ping VM
+// Ping VM (double-check)
 // ======================
+async function pingCheck(ip) {
+    const res = await ping.promise.probe(ip, { timeout: 2, extra: ["-c1"] });
+    return res.alive;
+}
+
 async function pingVM(vmId) {
+    const ip = VM_IPS[vmId];
+    if (!ip) {
+        console.log(`[${NODE_IP}] VM ${vmId} chưa khai báo IP trong .env`);
+        return;
+    }
+
     try {
-        const ip = VM_IPS[vmId];
-        if (!ip) {
-            console.log(`[${NODE_IP}] VM ${vmId} chưa khai báo IP trong .env`);
+        const first = await pingCheck(ip);
+
+        if (first) {
+            console.log(`[${NODE_IP}] VM ${vmId} (${ip}) online`);
+            pushMetric(vmId, 1);
             return;
         }
 
-        const res = await ping.promise.probe(ip, { timeout: 2, extra: ["-c1"] });
+        // Ping lại lần 2 sau 3 giây
+        await new Promise(r => setTimeout(r, 3000));
+        const second = await pingCheck(ip);
 
-        if (res.alive) {
-            console.log(`[${NODE_IP}] VM ${vmId} (${ip}) online`);
-            pushMetric(vmId, 1);
-        } else {
-            console.warn(`[${NODE_IP}] VM ${vmId} (${ip}) mất mạng -> reboot`);
-            sendTelegram(`VM ${vmId} (${ip}) mất mạng, reboot...`);
+        if (!second) {
+            console.warn(`[${NODE_IP}] VM ${vmId} (${ip}) mất mạng hoàn toàn -> reboot`);
+            sendTelegram(`VM ${vmId} (${ip}) mất mạng hoàn toàn, reboot...`);
 
             try {
                 execSync(`qm reboot ${vmId}`);
@@ -72,6 +84,9 @@ async function pingVM(vmId) {
 
             sendTelegram(`VM ${vmId} đã reboot`);
             pushMetric(vmId, 0);
+        } else {
+            console.log(`[${NODE_IP}] VM ${vmId} (${ip}) chập chờn nhưng vẫn sống`);
+            pushMetric(vmId, 1);
         }
     } catch (e) {
         console.error(`[${NODE_IP}] Lỗi check VM ${vmId}:`, e.message);
